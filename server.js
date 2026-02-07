@@ -250,6 +250,33 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (req.method === "POST" && req.url === "/draw") {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        try {
+          const data = JSON.parse(body || "{}");
+          const pixels = Array.isArray(data.pixels) ? data.pixels : [];
+          for (const p of pixels) {
+            const x = Number(p.x);
+            const y = Number(p.y);
+            const r = Math.max(0, Math.min(255, Number(p.r)));
+            const g = Math.max(0, Math.min(255, Number(p.g)));
+            const b = Math.max(0, Math.min(255, Number(p.b)));
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+              setPixel(Math.floor(x), Math.floor(y), r, g, b);
+            }
+          }
+          res.writeHead(204);
+          res.end();
+        } catch {
+          res.writeHead(400);
+          res.end("Bad JSON");
+        }
+      });
+      return;
+    }
+
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not found");
   } catch (err) {
