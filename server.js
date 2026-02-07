@@ -6,6 +6,8 @@ let termWidth = process.stdout.columns || 80;
 let termHeight = process.stdout.rows || 24;
 
 const WHITE = { r: 255, g: 255, b: 255 };
+const DEFAULT_BG = { r: 0, g: 0, b: 0 };
+let backgroundColor = { ...DEFAULT_BG };
 
 // 2x2 subpixel buffer (double width & height)
 let subWidth = termWidth * 2;
@@ -44,7 +46,7 @@ function showCursor() {
 }
 
 function clearToWhite() {
-  ansi("\x1b[48;2;255;255;255m\x1b[2J\x1b[H\x1b[0m");
+  ansi(`\x1b[48;2;${backgroundColor.r};${backgroundColor.g};${backgroundColor.b}m\x1b[2J\x1b[H\x1b[0m`);
 }
 
 function initBuffers() {
@@ -156,10 +158,12 @@ function drawCell(cellX, cellY) {
   const row = cellY + 1;
   const col = cellX + 1;
 
+  const bgColor = mask === 0 ? backgroundColor : bg;
+
   ansi(
     `\x1b[${row};${col}H` +
       `\x1b[38;2;${fg.r};${fg.g};${fg.b}m` +
-      `\x1b[48;2;${bg.r};${bg.g};${bg.b}m` +
+      `\x1b[48;2;${bgColor.r};${bgColor.g};${bgColor.b}m` +
       `${ch}\x1b[0m`
   );
 }
@@ -341,6 +345,27 @@ const server = http.createServer(async (req, res) => {
       clearToWhite();
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/background") {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        try {
+          const data = JSON.parse(body || "{}");
+          const r = Math.max(0, Math.min(255, Number(data.r)));
+          const g = Math.max(0, Math.min(255, Number(data.g)));
+          const b = Math.max(0, Math.min(255, Number(data.b)));
+          backgroundColor = { r, g, b };
+          clearToWhite();
+          res.writeHead(204);
+          res.end();
+        } catch {
+          res.writeHead(400);
+          res.end("Bad JSON");
+        }
+      });
       return;
     }
 

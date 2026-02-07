@@ -119,11 +119,27 @@ def main() -> int:
 
     root = None
     label = None
+    capture_btn = None
+    frozen = False
+    frozen_frame = None
     if SHOW_PREVIEW:
         root = tk.Tk()
         root.title("Camera Preview")
         label = tk.Label(root)
         label.pack()
+
+        def on_capture():
+            nonlocal frozen, frozen_frame
+            if frozen:
+                frozen = False
+                frozen_frame = None
+                capture_btn.config(text="Capture")
+            else:
+                frozen = True
+                capture_btn.config(text="Resume")
+
+        capture_btn = tk.Button(root, text="Capture", command=on_capture)
+        capture_btn.pack(pady=6)
 
         def on_close():
             stop_event.set()
@@ -165,7 +181,11 @@ def main() -> int:
         while True:
             if stop_event.is_set():
                 break
-            ret, frame = cap.read()
+            if frozen and frozen_frame is not None:
+                frame = frozen_frame.copy()
+                ret = True
+            else:
+                ret, frame = cap.read()
             if not ret:
                 time.sleep(FRAME_DELAY_SEC)
                 continue
@@ -235,6 +255,9 @@ def main() -> int:
                 label.image = photo
                 root.update_idletasks()
                 root.update()
+
+            if frozen and frozen_frame is None:
+                frozen_frame = frame.copy()
 
             # Send in batches
             batch = []
