@@ -29,33 +29,6 @@ function refreshSize() {
   termHeight = process.stdout.rows || termHeight;
 }
 
-function formatDrawCell(x, y, ch, fg, bg, state) {
-  if (x < 0 || y < 0 || x >= termWidth || y >= termHeight) return "";
-  const row = y + 1;
-  const col = x + 1;
-  const fgColor = fg || { r: 255, g: 255, b: 255 };
-  const bgColor = bg || backgroundColor;
-  const safeCh = typeof ch === "string" && ch.length ? ch[0] : " ";
-
-  let out = "";
-  // Move cursor if needed
-  out += `\x1b[${row};${col}H`;
-
-  if (!state || state.fg !== fgColor) {
-    out += `\x1b[38;2;${fgColor.r};${fgColor.g};${fgColor.b}m`;
-  }
-  if (!state || state.bg !== bgColor) {
-    out += `\x1b[48;2;${bgColor.r};${bgColor.g};${bgColor.b}m`;
-  }
-
-  out += safeCh;
-  if (state) {
-    state.fg = fgColor;
-    state.bg = bgColor;
-  }
-  return out;
-}
-
 function resetTerminal() {
   showCursor();
   ansi("\x1b[0m\x1b[2J\x1b[H");
@@ -214,6 +187,32 @@ function parseColorArr(arr) {
   return { r, g, b };
 }
 
+function formatDrawCell(x, y, ch, fg, bg, state) {
+  if (x < 0 || y < 0 || x >= termWidth || y >= termHeight) return "";
+  const row = y + 1;
+  const col = x + 1;
+  const fgColor = fg || { r: 255, g: 255, b: 255 };
+  const bgColor = bg || backgroundColor;
+  const safeCh = typeof ch === "string" && ch.length ? ch[0] : " ";
+
+  let out = "";
+  out += `\x1b[${row};${col}H`;
+
+  if (!state || state.fg !== fgColor) {
+    out += `\x1b[38;2;${fgColor.r};${fgColor.g};${fgColor.b}m`;
+  }
+  if (!state || state.bg !== bgColor) {
+    out += `\x1b[48;2;${bgColor.r};${bgColor.g};${bgColor.b}m`;
+  }
+
+  out += safeCh;
+  if (state) {
+    state.fg = fgColor;
+    state.bg = bgColor;
+  }
+  return out;
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/") {
@@ -312,24 +311,27 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Backward-compatible endpoints (draw as solid with bg = background)
-    if (req.method === "POST" && (req.url === "/pixel" || req.url === "/draw")) {
+    // Full frame: server expects one row per line; client sends pre-colored runs
+    if (req.method === "POST" && req.url === "/frame") {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
         try {
           const data = JSON.parse(body || "{}");
-          const pixels = req.url === "/draw" ? (Array.isArray(data.pixels) ? data.pixels : []) : [data];
+          const rows = Array.isArray(data.rows) ? data.rows : [];
           let out = "";
-          const state = { fg: null, bg: null };
-          for (const p of pixels) {
-            const x = Number(p.x);
-            const y = Number(p.y);
-            const r = Math.max(0, Math.min(255, Number(p.r)));
-            const g = Math.max(0, Math.min(255, Number(p.g)));
-            const b = Math.max(0, Math.min(255, Number(p.b)));
-            if (Number.isFinite(x) && Number.isFinite(y)) {
-              out += formatDrawCell(Math.floor(x), Math.floor(y), "■", { r, g, b }, backgroundColor, state);
+          for (let y = 0; y < rows.length && y < termHeight; y++) {
+            const row = rows[y];
+            if (!row || !Array.isArray(row.runs)) continue;
+            out += `\x1b[${y + 1};1H`;
+            for (const run of row.runs) {
+              const fg = parseColorArr(run.fg) || { r: 255, g: 255, b: 255 };
+              const bg = parseColorArr(run.bg) || backgroundColor;
+              const ch = typeof run.ch === "string" && run.ch.length ? run.ch[0] : " ";
+              const count = Math.max(0, Math.min(termWidth, Number(run.count) || 0));
+              out += `\x1b[38;2;${fg.r};${fg.g};${fg.b}m`;
+              out += `\x1b[48;2;${bg.r};${bg.g};${bg.b}m`;
+              out += ch.repeat(count);
             }
           }
           if (out) ansi(out + "\x1b[0m");
