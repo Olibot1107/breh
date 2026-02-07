@@ -29,19 +29,31 @@ function refreshSize() {
   termHeight = process.stdout.rows || termHeight;
 }
 
-function drawCell(x, y, ch, fg, bg) {
-  if (x < 0 || y < 0 || x >= termWidth || y >= termHeight) return;
+function formatDrawCell(x, y, ch, fg, bg, state) {
+  if (x < 0 || y < 0 || x >= termWidth || y >= termHeight) return "";
   const row = y + 1;
   const col = x + 1;
   const fgColor = fg || { r: 255, g: 255, b: 255 };
   const bgColor = bg || backgroundColor;
   const safeCh = typeof ch === "string" && ch.length ? ch[0] : " ";
-  ansi(
-    `\x1b[${row};${col}H` +
-      `\x1b[38;2;${fgColor.r};${fgColor.g};${fgColor.b}m` +
-      `\x1b[48;2;${bgColor.r};${bgColor.g};${bgColor.b}m` +
-      `${safeCh}\x1b[0m`
-  );
+
+  let out = "";
+  // Move cursor if needed
+  out += `\x1b[${row};${col}H`;
+
+  if (!state || state.fg !== fgColor) {
+    out += `\x1b[38;2;${fgColor.r};${fgColor.g};${fgColor.b}m`;
+  }
+  if (!state || state.bg !== bgColor) {
+    out += `\x1b[48;2;${bgColor.r};${bgColor.g};${bgColor.b}m`;
+  }
+
+  out += safeCh;
+  if (state) {
+    state.fg = fgColor;
+    state.bg = bgColor;
+  }
+  return out;
 }
 
 function resetTerminal() {
@@ -257,7 +269,8 @@ const server = http.createServer(async (req, res) => {
           const fg = parseColorArr(data.fg);
           const bg = parseColorArr(data.bg);
           if (Number.isFinite(x) && Number.isFinite(y)) {
-            drawCell(Math.floor(x), Math.floor(y), ch, fg, bg);
+            const out = formatDrawCell(Math.floor(x), Math.floor(y), ch, fg, bg);
+            if (out) ansi(out + "\x1b[0m");
           }
           res.writeHead(204);
           res.end();
@@ -276,6 +289,8 @@ const server = http.createServer(async (req, res) => {
         try {
           const data = JSON.parse(body || "{}");
           const cells = Array.isArray(data.cells) ? data.cells : [];
+          const state = { fg: null, bg: null };
+          let out = "";
           for (const c of cells) {
             const x = Number(c.x);
             const y = Number(c.y);
@@ -283,9 +298,10 @@ const server = http.createServer(async (req, res) => {
             const fg = parseColorArr(c.fg);
             const bg = parseColorArr(c.bg);
             if (Number.isFinite(x) && Number.isFinite(y)) {
-              drawCell(Math.floor(x), Math.floor(y), ch, fg, bg);
+              out += formatDrawCell(Math.floor(x), Math.floor(y), ch, fg, bg, state);
             }
           }
+          if (out) ansi(out + "\x1b[0m");
           res.writeHead(204);
           res.end();
         } catch {
@@ -304,6 +320,8 @@ const server = http.createServer(async (req, res) => {
         try {
           const data = JSON.parse(body || "{}");
           const pixels = req.url === "/draw" ? (Array.isArray(data.pixels) ? data.pixels : []) : [data];
+          let out = "";
+          const state = { fg: null, bg: null };
           for (const p of pixels) {
             const x = Number(p.x);
             const y = Number(p.y);
@@ -311,9 +329,10 @@ const server = http.createServer(async (req, res) => {
             const g = Math.max(0, Math.min(255, Number(p.g)));
             const b = Math.max(0, Math.min(255, Number(p.b)));
             if (Number.isFinite(x) && Number.isFinite(y)) {
-              drawCell(Math.floor(x), Math.floor(y), "■", { r, g, b }, backgroundColor);
+              out += formatDrawCell(Math.floor(x), Math.floor(y), "■", { r, g, b }, backgroundColor, state);
             }
           }
+          if (out) ansi(out + "\x1b[0m");
           res.writeHead(204);
           res.end();
         } catch {
