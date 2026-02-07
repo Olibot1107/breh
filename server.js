@@ -57,11 +57,22 @@ function initBuffers() {
   );
 }
 
+function toYuv(c) {
+  // BT.601 luma/chroma
+  const y = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
+  const u = -0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
+  const v = 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;
+  return { y, u, v };
+}
+
 function colorDist2(a, b) {
-  const dr = a.r - b.r;
-  const dg = a.g - b.g;
-  const db = a.b - b.b;
-  return dr * dr + dg * dg + db * db;
+  // Perceptual-ish distance in YUV
+  const ya = toYuv(a);
+  const yb = toYuv(b);
+  const dy = ya.y - yb.y;
+  const du = ya.u - yb.u;
+  const dv = ya.v - yb.v;
+  return dy * dy * 2.0 + du * du + dv * dv;
 }
 
 function averageColor(colors) {
@@ -74,40 +85,51 @@ function averageColor(colors) {
 }
 
 function pickTwoColors(quads) {
-  // Find the two most distant quadrant colors, then assign each quad to nearest.
-  let maxD = -1;
+  // 2-means (k=2) for 4 pixels. Better separation than farthest-pair.
   let c1 = quads[0];
-  let c2 = quads[0];
+  let c2 = quads[quads.length - 1];
+  // If all nearly identical, fall back to single color.
+  let maxD = 0;
   for (let i = 0; i < quads.length; i++) {
     for (let j = i + 1; j < quads.length; j++) {
-      const d = colorDist2(quads[i], quads[j]);
-      if (d > maxD) {
-        maxD = d;
-        c1 = quads[i];
-        c2 = quads[j];
-      }
+      maxD = Math.max(maxD, colorDist2(quads[i], quads[j]));
     }
+  }
+  if (maxD < 64) {
+    const avg = averageColor(quads);
+    return { fg: avg, bg: avg, maskBits: [1, 1, 1, 1] };
+  }
+
+  for (let iter = 0; iter < 3; iter++) {
+    const g1 = [];
+    const g2 = [];
+    for (const q of quads) {
+      const d1 = colorDist2(q, c1);
+      const d2 = colorDist2(q, c2);
+      if (d1 <= d2) g1.push(q);
+      else g2.push(q);
+    }
+    c1 = averageColor(g1.length ? g1 : quads);
+    c2 = averageColor(g2.length ? g2 : quads);
   }
 
   const fgSet = [];
   const bgSet = [];
   const maskBits = [];
-
-  for (let i = 0; i < quads.length; i++) {
-    const d1 = colorDist2(quads[i], c1);
-    const d2 = colorDist2(quads[i], c2);
+  for (const q of quads) {
+    const d1 = colorDist2(q, c1);
+    const d2 = colorDist2(q, c2);
     if (d1 <= d2) {
-      fgSet.push(quads[i]);
+      fgSet.push(q);
       maskBits.push(1);
     } else {
-      bgSet.push(quads[i]);
+      bgSet.push(q);
       maskBits.push(0);
     }
   }
 
   const fg = averageColor(fgSet.length ? fgSet : quads);
   const bg = averageColor(bgSet.length ? bgSet : quads);
-
   return { fg, bg, maskBits };
 }
 

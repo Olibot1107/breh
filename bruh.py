@@ -53,13 +53,16 @@ BATCH_SIZE = 100
 CAPTURE_WIDTH = 1280
 CAPTURE_HEIGHT = 720
 GAMMA = 1.0
-SHARPEN = False
+SHARPEN = True
 WHITE_BALANCE = True
 USE_SIMPLE_WB = True
 USE_DENOISE = False
-SATURATION = 1.1
+SATURATION = 1.0
 BRIGHTNESS = 1.0
 COLOR_GAINS = (1.0, 1.0, 1.0)  # (B, G, R)
+LINEARIZE_RESIZE = True
+RESIZE_GAMMA = 2.2
+TEMPORAL_SMOOTHING = 0.25  # 0 disables, 0.1-0.3 reduces noise/flicker
 
 # Preview window
 SHOW_PREVIEW = True
@@ -102,6 +105,15 @@ def adjust_saturation_brightness(frame_bgr):
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
 
+def get_source_from_args():
+    if len(sys.argv) <= 1:
+        return 0
+    arg = sys.argv[1]
+    if arg in ("--camera", "camera"):
+        return 0
+    return arg
+
+
 def main() -> int:
     stop_event = Event()
 
@@ -119,9 +131,10 @@ def main() -> int:
 
         root.protocol("WM_DELETE_WINDOW", on_close)
 
-    cap = cv2.VideoCapture(0)
+    source = get_source_from_args()
+    cap = cv2.VideoCapture(source)
     if not cap.isOpened():
-        print("Failed to open camera.", file=sys.stderr)
+        print("Failed to open camera/video source.", file=sys.stderr)
         return 1
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
@@ -145,6 +158,8 @@ def main() -> int:
             simple_wb = cv2.xphoto.createSimpleWB()
         except Exception:
             simple_wb = None
+
+    prev_frame = None
 
     try:
         while True:
@@ -176,20 +191,34 @@ def main() -> int:
                 r = np.clip(r * COLOR_GAINS[2], 0, 255).astype(np.uint8)
                 frame = cv2.merge((b, g, r))
 
-            if USE_DENOISE:
-                frame = cv2.bilateralFilter(frame, 5, 50, 50)
-
-            if SHARPEN:
-                blur = cv2.GaussianBlur(frame, (0, 0), 1.0)
-                frame = cv2.addWeighted(frame, 1.5, blur, -0.5, 0)
-
             if gamma_lut is not None:
                 frame = cv2.LUT(frame, gamma_lut)
 
             frame = adjust_saturation_brightness(frame)
 
-            # Resize to terminal subpixel grid
-            frame_small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            if TEMPORAL_SMOOTHING > 0:
+                if prev_frame is None:
+                    prev_frame = frame.astype(np.float32)
+                else:
+                    prev_frame = prev_frame * (1.0 - TEMPORAL_SMOOTHING) + frame.astype(np.float32) * TEMPORAL_SMOOTHING
+                frame = prev_frame.astype(np.uint8)
+
+            if USE_DENOISE:
+                frame = cv2.bilateralFilter(frame, 5, 50, 50)
+
+            if SHARPEN:
+                blur = cv2.GaussianBlur(frame, (0, 0), 0.8)
+                frame = cv2.addWeighted(frame, 1.3, blur, -0.3, 0)
+
+            # Resize to terminal subpixel grid (linearized to preserve detail)
+            if LINEARIZE_RESIZE:
+                f = frame.astype(np.float32) / 255.0
+                f = np.power(f, RESIZE_GAMMA)
+                f = cv2.resize(f, (width, height), interpolation=cv2.INTER_AREA)
+                f = np.power(np.clip(f, 0, 1), 1.0 / RESIZE_GAMMA)
+                frame_small = (f * 255.0).astype(np.uint8)
+            else:
+                frame_small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame_small, cv2.COLOR_BGR2RGB)
 
