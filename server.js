@@ -6,8 +6,30 @@ let termWidth = process.stdout.columns || 80;
 let termHeight = process.stdout.rows || 24;
 
 const WHITE = { r: 255, g: 255, b: 255 };
-let upperBuffer = [];
-let lowerBuffer = [];
+
+// 2x2 subpixel buffer (double width & height)
+let subWidth = termWidth * 2;
+let subHeight = termHeight * 2;
+let subBuffer = [];
+
+const QUAD_CHARS = [
+  " ", // 0
+  "▘", // 1 TL
+  "▝", // 2 TR
+  "▀", // 3 TL+TR
+  "▖", // 4 BL
+  "▌", // 5 TL+BL
+  "▞", // 6 TR+BL
+  "▛", // 7 TL+TR+BL
+  "▗", // 8 BR
+  "▚", // 9 TL+BR
+  "▐", // 10 TR+BR
+  "▜", // 11 TL+TR+BR
+  "▄", // 12 BL+BR
+  "▙", // 13 TL+BL+BR
+  "▟", // 14 TR+BL+BR
+  "█"  // 15 all
+];
 
 function ansi(cmd) {
   process.stdout.write(cmd);
@@ -26,39 +48,106 @@ function clearToWhite() {
 }
 
 function initBuffers() {
-  upperBuffer = Array.from({ length: termHeight }, () =>
-    Array.from({ length: termWidth }, () => null)
-  );
-  lowerBuffer = Array.from({ length: termHeight }, () =>
-    Array.from({ length: termWidth }, () => null)
+  termWidth = process.stdout.columns || termWidth;
+  termHeight = process.stdout.rows || termHeight;
+  subWidth = termWidth * 2;
+  subHeight = termHeight * 2;
+  subBuffer = Array.from({ length: subHeight }, () =>
+    Array.from({ length: subWidth }, () => ({ ...WHITE }))
   );
 }
 
-function drawCell(x, yCell) {
-  if (x < 0 || yCell < 0 || x >= termWidth || yCell >= termHeight) return;
-  const upper = upperBuffer[yCell][x] || WHITE;
-  const lower = lowerBuffer[yCell][x] || WHITE;
-  const row = yCell + 1;
-  const col = x + 1;
-  // Use upper half-block with foreground=upper, background=lower.
+function colorDist2(a, b) {
+  const dr = a.r - b.r;
+  const dg = a.g - b.g;
+  const db = a.b - b.b;
+  return dr * dr + dg * dg + db * db;
+}
+
+function averageColor(colors) {
+  let r = 0, g = 0, b = 0;
+  for (const c of colors) {
+    r += c.r; g += c.g; b += c.b;
+  }
+  const n = colors.length || 1;
+  return { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n) };
+}
+
+function pickTwoColors(quads) {
+  // Find the two most distant quadrant colors, then assign each quad to nearest.
+  let maxD = -1;
+  let c1 = quads[0];
+  let c2 = quads[0];
+  for (let i = 0; i < quads.length; i++) {
+    for (let j = i + 1; j < quads.length; j++) {
+      const d = colorDist2(quads[i], quads[j]);
+      if (d > maxD) {
+        maxD = d;
+        c1 = quads[i];
+        c2 = quads[j];
+      }
+    }
+  }
+
+  const fgSet = [];
+  const bgSet = [];
+  const maskBits = [];
+
+  for (let i = 0; i < quads.length; i++) {
+    const d1 = colorDist2(quads[i], c1);
+    const d2 = colorDist2(quads[i], c2);
+    if (d1 <= d2) {
+      fgSet.push(quads[i]);
+      maskBits.push(1);
+    } else {
+      bgSet.push(quads[i]);
+      maskBits.push(0);
+    }
+  }
+
+  const fg = averageColor(fgSet.length ? fgSet : quads);
+  const bg = averageColor(bgSet.length ? bgSet : quads);
+
+  return { fg, bg, maskBits };
+}
+
+function drawCell(cellX, cellY) {
+  const x0 = cellX * 2;
+  const y0 = cellY * 2;
+
+  const TL = subBuffer[y0][x0];
+  const TR = subBuffer[y0][x0 + 1];
+  const BL = subBuffer[y0 + 1][x0];
+  const BR = subBuffer[y0 + 1][x0 + 1];
+
+  const quads = [TL, TR, BL, BR];
+  const { fg, bg, maskBits } = pickTwoColors(quads);
+
+  // Build quadrant mask (TL=1, TR=2, BL=4, BR=8)
+  let mask = 0;
+  if (maskBits[0]) mask |= 1;
+  if (maskBits[1]) mask |= 2;
+  if (maskBits[2]) mask |= 4;
+  if (maskBits[3]) mask |= 8;
+
+  const ch = QUAD_CHARS[mask];
+  const row = cellY + 1;
+  const col = cellX + 1;
+
   ansi(
-    `\x1b[${row};${col}H\x1b[38;2;${upper.r};${upper.g};${upper.b}m` +
-      `\x1b[48;2;${lower.r};${lower.g};${lower.b}m▀\x1b[0m`
+    `\x1b[${row};${col}H` +
+      `\x1b[38;2;${fg.r};${fg.g};${fg.b}m` +
+      `\x1b[48;2;${bg.r};${bg.g};${bg.b}m` +
+      `${ch}\x1b[0m`
   );
 }
 
 function setPixel(x, y, r, g, b) {
-  // y is in subpixel rows: 0..(termHeight*2-1)
-  const yCell = Math.floor(y / 2);
-  const isUpper = y % 2 === 0;
-  if (x < 0 || yCell < 0 || x >= termWidth || yCell >= termHeight) return;
-  const color = { r, g, b };
-  if (isUpper) {
-    upperBuffer[yCell][x] = color;
-  } else {
-    lowerBuffer[yCell][x] = color;
-  }
-  drawCell(x, yCell);
+  if (x < 0 || y < 0 || x >= subWidth || y >= subHeight) return;
+  subBuffer[y][x] = { r, g, b };
+  const cellX = Math.floor(x / 2);
+  const cellY = Math.floor(y / 2);
+  drawCell(cellX, cellY);
 }
 
 function resetTerminal() {
@@ -66,14 +155,8 @@ function resetTerminal() {
   ansi("\x1b[0m\x1b[2J\x1b[H");
 }
 
-function refreshSize() {
-  termWidth = process.stdout.columns || termWidth;
-  termHeight = process.stdout.rows || termHeight;
-  initBuffers();
-}
-
 process.stdout.on("resize", () => {
-  refreshSize();
+  initBuffers();
   clearToWhite();
 });
 
@@ -88,7 +171,7 @@ process.on("SIGTERM", () => {
 });
 
 hideCursor();
-refreshSize();
+initBuffers();
 clearToWhite();
 
 const html = `<!doctype html>
@@ -98,27 +181,16 @@ const html = `<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Terminal Pixel Control</title>
     <style>
-      :root {
-        --bg: #0f1015;
-        --panel: #171923;
-        --text: #e8e8e8;
-        --accent: #6ee7ff;
-      }
+      :root { --bg:#0f1015; --panel:#171923; --text:#e8e8e8; --accent:#6ee7ff; }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         background: radial-gradient(1200px 800px at 20% 10%, #1c2433, #0f1015 60%);
         color: var(--text);
         font: 16px/1.4 "Space Grotesk", system-ui, sans-serif;
-        display: grid;
-        place-items: center;
-        min-height: 100vh;
+        display: grid; place-items: center; min-height: 100vh;
       }
-      .wrap {
-        width: min(960px, 94vw);
-        display: grid;
-        gap: 16px;
-      }
+      .wrap { width: min(960px, 94vw); display: grid; gap: 16px; }
       .panel {
         background: color-mix(in oklab, var(--panel), #000 10%);
         border: 1px solid #2a3142;
@@ -130,23 +202,13 @@ const html = `<!doctype html>
       .label { opacity: 0.8; }
       button {
         background: var(--accent);
-        color: #0b0f14;
-        border: 0;
-        padding: 10px 14px;
-        border-radius: 10px;
-        font-weight: 600;
-        cursor: pointer;
+        color: #0b0f14; border: 0; padding: 10px 14px;
+        border-radius: 10px; font-weight: 600; cursor: pointer;
       }
-      input[type="color"] {
-        width: 44px; height: 36px; border: none; background: transparent;
-      }
+      input[type="color"] { width: 44px; height: 36px; border: none; background: transparent; }
       canvas {
-        width: 100%;
-        height: auto;
-        image-rendering: pixelated;
-        background: #fff;
-        border-radius: 8px;
-        border: 1px solid #2a3142;
+        width: 100%; height: auto; image-rendering: pixelated;
+        background: #fff; border-radius: 8px; border: 1px solid #2a3142;
       }
       .hint { opacity: 0.7; font-size: 13px; }
     </style>
@@ -158,7 +220,7 @@ const html = `<!doctype html>
           <div class="label">Color</div>
           <input id="color" type="color" value="#ff0000" />
           <button id="clear">Clear (White)</button>
-          <div class="hint">Click or drag on the canvas to set terminal cells.</div>
+          <div class="hint">Click or drag on the canvas to set terminal subpixels.</div>
         </div>
       </div>
       <div class="panel">
@@ -246,9 +308,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && req.url === "/size") {
-      refreshSize();
+      initBuffers();
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ width: termWidth, height: termHeight * 2, subpixel: true }));
+      res.end(JSON.stringify({ width: subWidth, height: subHeight, subpixel: "2x2" }));
       return;
     }
 

@@ -8,6 +8,7 @@ import json
 import time
 import sys
 from typing import Tuple
+from threading import Event
 
 try:
     import cv2  # type: ignore
@@ -27,6 +28,18 @@ except Exception:
     print("requests is required. Install with: pip install requests", file=sys.stderr)
     raise
 
+try:
+    from PIL import Image, ImageTk  # type: ignore
+except Exception:
+    print("Pillow is required for the preview window. Install with: pip install pillow", file=sys.stderr)
+    raise
+
+try:
+    import tkinter as tk  # type: ignore
+except Exception:
+    print("tkinter is required for the preview window.", file=sys.stderr)
+    raise
+
 SERVER = "http://192.168.1.100:3000"
 PIXEL_ENDPOINT = SERVER + "/pixel"
 DRAW_ENDPOINT = SERVER + "/draw"
@@ -35,14 +48,20 @@ CLEAR_ENDPOINT = SERVER + "/clear"
 
 # Throttle to avoid overwhelming the server.
 FRAME_DELAY_SEC = 0.10
-BATCH_SIZE = 100
+BATCH_SIZE = 10000
 
 # Quality controls
-CAPTURE_WIDTH = 640
-CAPTURE_HEIGHT = 480
-GAMMA = 1.05
-SHARPEN = True
+CAPTURE_WIDTH = 1280
+CAPTURE_HEIGHT = 720
+GAMMA = 1.0
+SHARPEN = False
 WHITE_BALANCE = True
+USE_SIMPLE_WB = True
+USE_CLAHE = False
+USE_DENOISE = False
+COLOR_GAINS = (1.0, 1.0, 1.0)  # (B, G, R)
+SHOW_PREVIEW = True
+PREVIEW_WIDTH = 480
 
 
 def get_grid_size() -> Tuple[int, int]:
@@ -71,6 +90,22 @@ def clear_screen() -> None:
 
 
 def main() -> int:
+    stop_event = Event()
+
+    root = None
+    label = None
+    if SHOW_PREVIEW:
+        root = tk.Tk()
+        root.title("Camera Preview")
+        label = tk.Label(root)
+        label.pack()
+
+        def on_close():
+            stop_event.set()
+            root.destroy()
+
+        root.protocol("WM_DELETE_WINDOW", on_close)
+
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Failed to open camera.", file=sys.stderr)
@@ -89,14 +124,26 @@ def main() -> int:
     else:
         gamma_lut = None
 
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if USE_CLAHE else None
+    simple_wb = None
+    if USE_SIMPLE_WB and hasattr(cv2, "xphoto"):
+        try:
+            simple_wb = cv2.xphoto.createSimpleWB()
+        except Exception:
+            simple_wb = None
+
     try:
         while True:
+            if stop_event.is_set():
+                break
             ret, frame = cap.read()
             if not ret:
                 time.sleep(FRAME_DELAY_SEC)
                 continue
 
-            if WHITE_BALANCE:
+            if WHITE_BALANCE and simple_wb is not None:
+                frame = simple_wb.balanceWhite(frame)
+            elif WHITE_BALANCE:
                 # Gray-world white balance in BGR space.
                 b, g, r = cv2.split(frame)
                 b_avg = float(b.mean()) or 1.0
@@ -108,6 +155,16 @@ def main() -> int:
                 r = np.clip(r * (gray_avg / r_avg), 0, 255).astype(np.uint8)
                 frame = cv2.merge((b, g, r))
 
+            if COLOR_GAINS != (1.0, 1.0, 1.0):
+                b, g, r = cv2.split(frame)
+                b = np.clip(b * COLOR_GAINS[0], 0, 255).astype(np.uint8)
+                g = np.clip(g * COLOR_GAINS[1], 0, 255).astype(np.uint8)
+                r = np.clip(r * COLOR_GAINS[2], 0, 255).astype(np.uint8)
+                frame = cv2.merge((b, g, r))
+
+            if USE_DENOISE:
+                frame = cv2.bilateralFilter(frame, 5, 50, 50)
+
             if SHARPEN:
                 blur = cv2.GaussianBlur(frame, (0, 0), 1.0)
                 frame = cv2.addWeighted(frame, 1.5, blur, -0.5, 0)
@@ -115,10 +172,31 @@ def main() -> int:
             if gamma_lut is not None:
                 frame = cv2.LUT(frame, gamma_lut)
 
+            if clahe is not None:
+                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                l, a, b = cv2.split(lab)
+                l = clahe.apply(l)
+                lab = cv2.merge((l, a, b))
+                frame = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
             # Resize to terminal grid
             frame_small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame_small, cv2.COLOR_BGR2RGB)
+
+            if SHOW_PREVIEW and root is not None and label is not None:
+                preview_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w = preview_rgb.shape[:2]
+                scale = PREVIEW_WIDTH / float(w)
+                preview_resized = cv2.resize(
+                    preview_rgb, (PREVIEW_WIDTH, int(h * scale)), interpolation=cv2.INTER_AREA
+                )
+                image = Image.fromarray(preview_resized)
+                photo = ImageTk.PhotoImage(image=image)
+                label.configure(image=photo)
+                label.image = photo
+                root.update_idletasks()
+                root.update()
 
             # Send in batches
             batch = []
