@@ -40,8 +40,9 @@ BATCH_SIZE = 100
 # Quality controls
 CAPTURE_WIDTH = 640
 CAPTURE_HEIGHT = 480
-GAMMA = 1.15
+GAMMA = 1.05
 SHARPEN = True
+WHITE_BALANCE = True
 
 
 def get_grid_size() -> Tuple[int, int]:
@@ -94,6 +95,18 @@ def main() -> int:
             if not ret:
                 time.sleep(FRAME_DELAY_SEC)
                 continue
+
+            if WHITE_BALANCE:
+                # Gray-world white balance in BGR space.
+                b, g, r = cv2.split(frame)
+                b_avg = float(b.mean()) or 1.0
+                g_avg = float(g.mean()) or 1.0
+                r_avg = float(r.mean()) or 1.0
+                gray_avg = (b_avg + g_avg + r_avg) / 3.0
+                b = np.clip(b * (gray_avg / b_avg), 0, 255).astype(np.uint8)
+                g = np.clip(g * (gray_avg / g_avg), 0, 255).astype(np.uint8)
+                r = np.clip(r * (gray_avg / r_avg), 0, 255).astype(np.uint8)
+                frame = cv2.merge((b, g, r))
 
             if SHARPEN:
                 blur = cv2.GaussianBlur(frame, (0, 0), 1.0)

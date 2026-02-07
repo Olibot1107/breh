@@ -1,10 +1,13 @@
 import http from "node:http";
-import { fileURLToPath } from "node:url";
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
 let termWidth = process.stdout.columns || 80;
 let termHeight = process.stdout.rows || 24;
+
+const WHITE = { r: 255, g: 255, b: 255 };
+let upperBuffer = [];
+let lowerBuffer = [];
 
 function ansi(cmd) {
   process.stdout.write(cmd);
@@ -19,18 +22,43 @@ function showCursor() {
 }
 
 function clearToWhite() {
-  // Set background to white, clear screen, reset attributes, and move cursor home.
   ansi("\x1b[48;2;255;255;255m\x1b[2J\x1b[H\x1b[0m");
 }
 
-const PIXEL_CHAR = "█";
+function initBuffers() {
+  upperBuffer = Array.from({ length: termHeight }, () =>
+    Array.from({ length: termWidth }, () => null)
+  );
+  lowerBuffer = Array.from({ length: termHeight }, () =>
+    Array.from({ length: termWidth }, () => null)
+  );
+}
+
+function drawCell(x, yCell) {
+  if (x < 0 || yCell < 0 || x >= termWidth || yCell >= termHeight) return;
+  const upper = upperBuffer[yCell][x] || WHITE;
+  const lower = lowerBuffer[yCell][x] || WHITE;
+  const row = yCell + 1;
+  const col = x + 1;
+  // Use upper half-block with foreground=upper, background=lower.
+  ansi(
+    `\x1b[${row};${col}H\x1b[38;2;${upper.r};${upper.g};${upper.b}m` +
+      `\x1b[48;2;${lower.r};${lower.g};${lower.b}m▀\x1b[0m`
+  );
+}
 
 function setPixel(x, y, r, g, b) {
-  if (x < 0 || y < 0 || x >= termWidth || y >= termHeight) return;
-  const row = y + 1;
-  const col = x + 1;
-  // Use a full block with foreground color for better apparent saturation.
-  ansi(`\x1b[${row};${col}H\x1b[38;2;${r};${g};${b}m${PIXEL_CHAR}\x1b[0m`);
+  // y is in subpixel rows: 0..(termHeight*2-1)
+  const yCell = Math.floor(y / 2);
+  const isUpper = y % 2 === 0;
+  if (x < 0 || yCell < 0 || x >= termWidth || yCell >= termHeight) return;
+  const color = { r, g, b };
+  if (isUpper) {
+    upperBuffer[yCell][x] = color;
+  } else {
+    lowerBuffer[yCell][x] = color;
+  }
+  drawCell(x, yCell);
 }
 
 function resetTerminal() {
@@ -41,6 +69,7 @@ function resetTerminal() {
 function refreshSize() {
   termWidth = process.stdout.columns || termWidth;
   termHeight = process.stdout.rows || termHeight;
+  initBuffers();
 }
 
 process.stdout.on("resize", () => {
@@ -59,6 +88,7 @@ process.on("SIGTERM", () => {
 });
 
 hideCursor();
+refreshSize();
 clearToWhite();
 
 const html = `<!doctype html>
@@ -218,11 +248,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/size") {
       refreshSize();
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ width: termWidth, height: termHeight }));
+      res.end(JSON.stringify({ width: termWidth, height: termHeight * 2, subpixel: true }));
       return;
     }
 
     if (req.method === "POST" && req.url === "/clear") {
+      initBuffers();
       clearToWhite();
       res.writeHead(204);
       res.end();
@@ -289,6 +320,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  // Log to stderr so it doesn't interfere with drawing.
   process.stderr.write(`Server running on http://localhost:${PORT}\n`);
 });
