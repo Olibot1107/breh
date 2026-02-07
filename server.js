@@ -5,33 +5,8 @@ const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 let termWidth = process.stdout.columns || 80;
 let termHeight = process.stdout.rows || 24;
 
-const WHITE = { r: 255, g: 255, b: 255 };
 const DEFAULT_BG = { r: 0, g: 0, b: 0 };
 let backgroundColor = { ...DEFAULT_BG };
-
-// 2x2 subpixel buffer (double width & height)
-let subWidth = termWidth * 2;
-let subHeight = termHeight * 2;
-let subBuffer = [];
-
-const QUAD_CHARS = [
-  " ", // 0
-  "▘", // 1 TL
-  "▝", // 2 TR
-  "▀", // 3 TL+TR
-  "▖", // 4 BL
-  "▌", // 5 TL+BL
-  "▞", // 6 TR+BL
-  "▛", // 7 TL+TR+BL
-  "▗", // 8 BR
-  "▚", // 9 TL+BR
-  "▐", // 10 TR+BR
-  "▜", // 11 TL+TR+BR
-  "▄", // 12 BL+BR
-  "▙", // 13 TL+BL+BR
-  "▟", // 14 TR+BL+BR
-  "■"  // 15 all (solid square)
-];
 
 function ansi(cmd) {
   process.stdout.write(cmd);
@@ -45,135 +20,28 @@ function showCursor() {
   ansi("\x1b[?25h");
 }
 
-function clearToWhite() {
+function clearScreen() {
   ansi(`\x1b[48;2;${backgroundColor.r};${backgroundColor.g};${backgroundColor.b}m\x1b[2J\x1b[H\x1b[0m`);
 }
 
-function initBuffers() {
+function refreshSize() {
   termWidth = process.stdout.columns || termWidth;
   termHeight = process.stdout.rows || termHeight;
-  subWidth = termWidth * 2;
-  subHeight = termHeight * 2;
-  subBuffer = Array.from({ length: subHeight }, () =>
-    Array.from({ length: subWidth }, () => ({ ...WHITE }))
-  );
 }
 
-function toYuv(c) {
-  // BT.601 luma/chroma
-  const y = 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;
-  const u = -0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
-  const v = 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;
-  return { y, u, v };
-}
-
-function colorDist2(a, b) {
-  // Perceptual-ish distance in YUV
-  const ya = toYuv(a);
-  const yb = toYuv(b);
-  const dy = ya.y - yb.y;
-  const du = ya.u - yb.u;
-  const dv = ya.v - yb.v;
-  return dy * dy * 2.0 + du * du + dv * dv;
-}
-
-function averageColor(colors) {
-  let r = 0, g = 0, b = 0;
-  for (const c of colors) {
-    r += c.r; g += c.g; b += c.b;
-  }
-  const n = colors.length || 1;
-  return { r: Math.round(r / n), g: Math.round(g / n), b: Math.round(b / n) };
-}
-
-function pickTwoColors(quads) {
-  // 2-means (k=2) for 4 pixels. Better separation than farthest-pair.
-  let c1 = quads[0];
-  let c2 = quads[quads.length - 1];
-  // If all nearly identical, fall back to single color.
-  let maxD = 0;
-  for (let i = 0; i < quads.length; i++) {
-    for (let j = i + 1; j < quads.length; j++) {
-      maxD = Math.max(maxD, colorDist2(quads[i], quads[j]));
-    }
-  }
-  if (maxD < 64) {
-    const avg = averageColor(quads);
-    return { fg: avg, bg: avg, maskBits: [1, 1, 1, 1] };
-  }
-
-  for (let iter = 0; iter < 3; iter++) {
-    const g1 = [];
-    const g2 = [];
-    for (const q of quads) {
-      const d1 = colorDist2(q, c1);
-      const d2 = colorDist2(q, c2);
-      if (d1 <= d2) g1.push(q);
-      else g2.push(q);
-    }
-    c1 = averageColor(g1.length ? g1 : quads);
-    c2 = averageColor(g2.length ? g2 : quads);
-  }
-
-  const fgSet = [];
-  const bgSet = [];
-  const maskBits = [];
-  for (const q of quads) {
-    const d1 = colorDist2(q, c1);
-    const d2 = colorDist2(q, c2);
-    if (d1 <= d2) {
-      fgSet.push(q);
-      maskBits.push(1);
-    } else {
-      bgSet.push(q);
-      maskBits.push(0);
-    }
-  }
-
-  const fg = averageColor(fgSet.length ? fgSet : quads);
-  const bg = averageColor(bgSet.length ? bgSet : quads);
-  return { fg, bg, maskBits };
-}
-
-function drawCell(cellX, cellY) {
-  const x0 = cellX * 2;
-  const y0 = cellY * 2;
-
-  const TL = subBuffer[y0][x0];
-  const TR = subBuffer[y0][x0 + 1];
-  const BL = subBuffer[y0 + 1][x0];
-  const BR = subBuffer[y0 + 1][x0 + 1];
-
-  const quads = [TL, TR, BL, BR];
-  const { fg, bg, maskBits } = pickTwoColors(quads);
-
-  // Build quadrant mask (TL=1, TR=2, BL=4, BR=8)
-  let mask = 0;
-  if (maskBits[0]) mask |= 1;
-  if (maskBits[1]) mask |= 2;
-  if (maskBits[2]) mask |= 4;
-  if (maskBits[3]) mask |= 8;
-
-  const ch = QUAD_CHARS[mask];
-  const row = cellY + 1;
-  const col = cellX + 1;
-
-  const bgColor = mask === 0 ? backgroundColor : bg;
-
+function drawCell(x, y, ch, fg, bg) {
+  if (x < 0 || y < 0 || x >= termWidth || y >= termHeight) return;
+  const row = y + 1;
+  const col = x + 1;
+  const fgColor = fg || { r: 255, g: 255, b: 255 };
+  const bgColor = bg || backgroundColor;
+  const safeCh = typeof ch === "string" && ch.length ? ch[0] : " ";
   ansi(
     `\x1b[${row};${col}H` +
-      `\x1b[38;2;${fg.r};${fg.g};${fg.b}m` +
+      `\x1b[38;2;${fgColor.r};${fgColor.g};${fgColor.b}m` +
       `\x1b[48;2;${bgColor.r};${bgColor.g};${bgColor.b}m` +
-      `${ch}\x1b[0m`
+      `${safeCh}\x1b[0m`
   );
-}
-
-function setPixel(x, y, r, g, b) {
-  if (x < 0 || y < 0 || x >= subWidth || y >= subHeight) return;
-  subBuffer[y][x] = { r, g, b };
-  const cellX = Math.floor(x / 2);
-  const cellY = Math.floor(y / 2);
-  drawCell(cellX, cellY);
 }
 
 function resetTerminal() {
@@ -182,8 +50,8 @@ function resetTerminal() {
 }
 
 process.stdout.on("resize", () => {
-  initBuffers();
-  clearToWhite();
+  refreshSize();
+  clearScreen();
 });
 
 process.on("SIGINT", () => {
@@ -197,8 +65,8 @@ process.on("SIGTERM", () => {
 });
 
 hideCursor();
-initBuffers();
-clearToWhite();
+refreshSize();
+clearScreen();
 
 const html = `<!doctype html>
 <html>
@@ -245,8 +113,8 @@ const html = `<!doctype html>
         <div class="row">
           <div class="label">Color</div>
           <input id="color" type="color" value="#ff0000" />
-          <button id="clear">Clear (White)</button>
-          <div class="hint">Click or drag on the canvas to set terminal subpixels.</div>
+          <button id="clear">Clear</button>
+          <div class="hint">Click or drag to draw (client chooses chars/colors).</div>
         </div>
       </div>
       <div class="panel">
@@ -279,12 +147,12 @@ const html = `<!doctype html>
         return { r, g, b };
       }
 
-      async function sendPixel(x, y) {
+      async function sendCell(x, y) {
         const { r, g, b } = hexToRgb(colorInput.value);
-        await fetch('/pixel', {
+        await fetch('/cell', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ x, y, r, g, b })
+          body: JSON.stringify({ x, y, ch: '■', fg: [r,g,b], bg: [0,0,0] })
         });
         ctx.fillStyle = colorInput.value;
         ctx.fillRect(x, y, 1, 1);
@@ -302,13 +170,13 @@ const html = `<!doctype html>
       canvas.addEventListener('mousedown', (e) => {
         painting = true;
         const { x, y } = getPos(e);
-        sendPixel(x, y);
+        sendCell(x, y);
       });
 
       canvas.addEventListener('mousemove', (e) => {
         if (!painting) return;
         const { x, y } = getPos(e);
-        sendPixel(x, y);
+        sendCell(x, y);
       });
 
       window.addEventListener('mouseup', () => { painting = false; });
@@ -325,6 +193,15 @@ const html = `<!doctype html>
   </body>
 </html>`;
 
+function parseColorArr(arr) {
+  if (!Array.isArray(arr) || arr.length < 3) return null;
+  const r = Math.max(0, Math.min(255, Number(arr[0])));
+  const g = Math.max(0, Math.min(255, Number(arr[1])));
+  const b = Math.max(0, Math.min(255, Number(arr[2])));
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+  return { r, g, b };
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/") {
@@ -334,15 +211,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && req.url === "/size") {
-      initBuffers();
+      refreshSize();
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ width: subWidth, height: subHeight, subpixel: "2x2" }));
+      res.end(JSON.stringify({ width: termWidth, height: termHeight }));
       return;
     }
 
     if (req.method === "POST" && req.url === "/clear") {
-      initBuffers();
-      clearToWhite();
+      clearScreen();
       res.writeHead(204);
       res.end();
       return;
@@ -358,7 +234,7 @@ const server = http.createServer(async (req, res) => {
           const g = Math.max(0, Math.min(255, Number(data.g)));
           const b = Math.max(0, Math.min(255, Number(data.b)));
           backgroundColor = { r, g, b };
-          clearToWhite();
+          clearScreen();
           res.writeHead(204);
           res.end();
         } catch {
@@ -369,7 +245,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/pixel") {
+    if (req.method === "POST" && req.url === "/cell") {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
@@ -377,11 +253,11 @@ const server = http.createServer(async (req, res) => {
           const data = JSON.parse(body || "{}");
           const x = Number(data.x);
           const y = Number(data.y);
-          const r = Math.max(0, Math.min(255, Number(data.r)));
-          const g = Math.max(0, Math.min(255, Number(data.g)));
-          const b = Math.max(0, Math.min(255, Number(data.b)));
+          const ch = data.ch;
+          const fg = parseColorArr(data.fg);
+          const bg = parseColorArr(data.bg);
           if (Number.isFinite(x) && Number.isFinite(y)) {
-            setPixel(Math.floor(x), Math.floor(y), r, g, b);
+            drawCell(Math.floor(x), Math.floor(y), ch, fg, bg);
           }
           res.writeHead(204);
           res.end();
@@ -393,13 +269,41 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (req.method === "POST" && req.url === "/draw") {
+    if (req.method === "POST" && req.url === "/drawcells") {
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
         try {
           const data = JSON.parse(body || "{}");
-          const pixels = Array.isArray(data.pixels) ? data.pixels : [];
+          const cells = Array.isArray(data.cells) ? data.cells : [];
+          for (const c of cells) {
+            const x = Number(c.x);
+            const y = Number(c.y);
+            const ch = c.ch;
+            const fg = parseColorArr(c.fg);
+            const bg = parseColorArr(c.bg);
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+              drawCell(Math.floor(x), Math.floor(y), ch, fg, bg);
+            }
+          }
+          res.writeHead(204);
+          res.end();
+        } catch {
+          res.writeHead(400);
+          res.end("Bad JSON");
+        }
+      });
+      return;
+    }
+
+    // Backward-compatible endpoints (draw as solid with bg = background)
+    if (req.method === "POST" && (req.url === "/pixel" || req.url === "/draw")) {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        try {
+          const data = JSON.parse(body || "{}");
+          const pixels = req.url === "/draw" ? (Array.isArray(data.pixels) ? data.pixels : []) : [data];
           for (const p of pixels) {
             const x = Number(p.x);
             const y = Number(p.y);
@@ -407,7 +311,7 @@ const server = http.createServer(async (req, res) => {
             const g = Math.max(0, Math.min(255, Number(p.g)));
             const b = Math.max(0, Math.min(255, Number(p.b)));
             if (Number.isFinite(x) && Number.isFinite(y)) {
-              setPixel(Math.floor(x), Math.floor(y), r, g, b);
+              drawCell(Math.floor(x), Math.floor(y), "■", { r, g, b }, backgroundColor);
             }
           }
           res.writeHead(204);
