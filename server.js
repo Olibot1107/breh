@@ -28,7 +28,7 @@ const QUAD_CHARS = [
   "▄", // 12 BL+BR
   "▙", // 13 TL+BL+BR
   "▟", // 14 TR+BL+BR
-  "█"  // 15 all
+  "■"  // 15 all (solid square)
 ];
 
 function ansi(cmd) {

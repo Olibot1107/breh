@@ -41,14 +41,13 @@ except Exception:
     raise
 
 SERVER = "http://192.168.1.100:3000"
-PIXEL_ENDPOINT = SERVER + "/pixel"
 DRAW_ENDPOINT = SERVER + "/draw"
 SIZE_ENDPOINT = SERVER + "/size"
 CLEAR_ENDPOINT = SERVER + "/clear"
 
 # Throttle to avoid overwhelming the server.
-FRAME_DELAY_SEC = 0.10
-BATCH_SIZE = 10000
+FRAME_DELAY_SEC = 0.08
+BATCH_SIZE = 100
 
 # Quality controls
 CAPTURE_WIDTH = 1280
@@ -57,9 +56,12 @@ GAMMA = 1.0
 SHARPEN = False
 WHITE_BALANCE = True
 USE_SIMPLE_WB = True
-USE_CLAHE = False
 USE_DENOISE = False
+SATURATION = 1.1
+BRIGHTNESS = 1.0
 COLOR_GAINS = (1.0, 1.0, 1.0)  # (B, G, R)
+
+# Preview window
 SHOW_PREVIEW = True
 PREVIEW_WIDTH = 480
 
@@ -89,6 +91,17 @@ def clear_screen() -> None:
         pass
 
 
+def adjust_saturation_brightness(frame_bgr):
+    if SATURATION == 1.0 and BRIGHTNESS == 1.0:
+        return frame_bgr
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+    h, s, v = cv2.split(hsv)
+    s = np.clip(s * SATURATION, 0, 255)
+    v = np.clip(v * BRIGHTNESS, 0, 255)
+    hsv = cv2.merge((h, s, v)).astype(np.uint8)
+    return cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+
+
 def main() -> int:
     stop_event = Event()
 
@@ -113,6 +126,8 @@ def main() -> int:
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
+    if hasattr(cv2, "CAP_PROP_AUTO_WB"):
+        cap.set(cv2.CAP_PROP_AUTO_WB, 1)
 
     clear_screen()
     width, height = get_grid_size()
@@ -124,7 +139,6 @@ def main() -> int:
     else:
         gamma_lut = None
 
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if USE_CLAHE else None
     simple_wb = None
     if USE_SIMPLE_WB and hasattr(cv2, "xphoto"):
         try:
@@ -172,14 +186,9 @@ def main() -> int:
             if gamma_lut is not None:
                 frame = cv2.LUT(frame, gamma_lut)
 
-            if clahe is not None:
-                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-                l, a, b = cv2.split(lab)
-                l = clahe.apply(l)
-                lab = cv2.merge((l, a, b))
-                frame = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            frame = adjust_saturation_brightness(frame)
 
-            # Resize to terminal grid
+            # Resize to terminal subpixel grid
             frame_small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame_small, cv2.COLOR_BGR2RGB)
