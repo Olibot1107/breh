@@ -23,11 +23,14 @@ function clearToWhite() {
   ansi("\x1b[48;2;255;255;255m\x1b[2J\x1b[H\x1b[0m");
 }
 
+const PIXEL_CHAR = "█";
+
 function setPixel(x, y, r, g, b) {
   if (x < 0 || y < 0 || x >= termWidth || y >= termHeight) return;
   const row = y + 1;
   const col = x + 1;
-  ansi(`\x1b[${row};${col}H\x1b[48;2;${r};${g};${b}m \x1b[0m`);
+  // Use a full block with foreground color for better apparent saturation.
+  ansi(`\x1b[${row};${col}H\x1b[38;2;${r};${g};${b}m${PIXEL_CHAR}\x1b[0m`);
 }
 
 function resetTerminal() {

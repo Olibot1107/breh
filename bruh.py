@@ -16,6 +16,12 @@ except Exception as exc:
     raise
 
 try:
+    import numpy as np  # type: ignore
+except Exception:
+    print("numpy is required. Install with: pip install numpy", file=sys.stderr)
+    raise
+
+try:
     import requests  # type: ignore
 except Exception:
     print("requests is required. Install with: pip install requests", file=sys.stderr)
@@ -30,6 +36,12 @@ CLEAR_ENDPOINT = SERVER + "/clear"
 # Throttle to avoid overwhelming the server.
 FRAME_DELAY_SEC = 0.10
 BATCH_SIZE = 100
+
+# Quality controls
+CAPTURE_WIDTH = 640
+CAPTURE_HEIGHT = 480
+GAMMA = 1.15
+SHARPEN = True
 
 
 def get_grid_size() -> Tuple[int, int]:
@@ -63,8 +75,18 @@ def main() -> int:
         print("Failed to open camera.", file=sys.stderr)
         return 1
 
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAPTURE_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAPTURE_HEIGHT)
+
     clear_screen()
     width, height = get_grid_size()
+
+    if GAMMA != 1.0:
+        inv = 1.0 / GAMMA
+        lut = (np.linspace(0, 255, 256) / 255.0) ** inv
+        gamma_lut = (lut * 255).astype("uint8")
+    else:
+        gamma_lut = None
 
     try:
         while True:
@@ -72,6 +94,13 @@ def main() -> int:
             if not ret:
                 time.sleep(FRAME_DELAY_SEC)
                 continue
+
+            if SHARPEN:
+                blur = cv2.GaussianBlur(frame, (0, 0), 1.0)
+                frame = cv2.addWeighted(frame, 1.5, blur, -0.5, 0)
+
+            if gamma_lut is not None:
+                frame = cv2.LUT(frame, gamma_lut)
 
             # Resize to terminal grid
             frame_small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
