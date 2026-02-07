@@ -1,12 +1,5 @@
 {
-  "name": "terminal-pixel-control",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
   "dependencies": {
-    "ws": "^8.16.0"
-  },
-  "scripts": {
-    "start": "node server.js"
+    "canvas": "^3.2.1"
   }
 }
