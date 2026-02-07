@@ -32,14 +32,23 @@ except Exception:
     print("requests is required. Install with: pip install requests", file=sys.stderr)
     raise
 
+try:
+    from websockets.sync.client import connect as ws_connect  # type: ignore
+except Exception:
+    ws_connect = None
+
 SERVER = "http://192.168.1.100:3000"
 FRAME_ENDPOINT = SERVER + "/frame"
 SIZE_ENDPOINT = SERVER + "/size"
 CLEAR_ENDPOINT = SERVER + "/clear"
 
-FRAME_DELAY_SEC = 0.0
+FRAME_DELAY_SEC = 1.0 / 60.0
 LINEARIZE_RESIZE = True
 RESIZE_GAMMA = 2.2
+USE_CENTER_SAMPLE = False
+USE_WEBSOCKETS = True
+WS_URL = None
+_ws = None
 
 
 def get_grid_size() -> Tuple[int, int]:
@@ -53,6 +62,14 @@ def get_grid_size() -> Tuple[int, int]:
 
 
 def send_frame(rows) -> None:
+    if USE_WEBSOCKETS and ws_connect is not None:
+        ws = get_ws()
+        if ws is not None:
+            try:
+                ws.send(json.dumps({"type": "frame", "rows": rows}))
+                return
+            except Exception:
+                close_ws()
     payload = {"rows": rows}
     try:
         requests.post(
@@ -66,13 +83,64 @@ def send_frame(rows) -> None:
 
 
 def clear_screen() -> None:
+    if USE_WEBSOCKETS and ws_connect is not None:
+        ws = get_ws()
+        if ws is not None:
+            try:
+                ws.send(json.dumps({"type": "clear"}))
+                return
+            except Exception:
+                close_ws()
     try:
         requests.post(CLEAR_ENDPOINT, timeout=2)
     except Exception:
         pass
 
 
+def server_to_ws_url(server: str) -> str:
+    if server.startswith("https://"):
+        return "wss://" + server[len("https://"):]
+    if server.startswith("http://"):
+        return "ws://" + server[len("http://"):]
+    return "ws://" + server
+
+
+def get_ws():
+    global _ws, WS_URL
+    if ws_connect is None:
+        return None
+    if WS_URL is None:
+        WS_URL = server_to_ws_url(SERVER)
+    if _ws is None:
+        try:
+            _ws = ws_connect(WS_URL, open_timeout=2, close_timeout=1, max_size=2**22, ping_interval=None)
+        except Exception:
+            _ws = None
+    return _ws
+
+
+def close_ws():
+    global _ws
+    if _ws is not None:
+        try:
+            _ws.close()
+        except Exception:
+            pass
+        _ws = None
+
+
+def center_sample(frame_bgr, width, height):
+    h, w = frame_bgr.shape[:2]
+    ys = ((np.arange(height) + 0.5) * h / height).astype(np.int32)
+    xs = ((np.arange(width) + 0.5) * w / width).astype(np.int32)
+    ys = np.clip(ys, 0, h - 1)
+    xs = np.clip(xs, 0, w - 1)
+    return frame_bgr[ys[:, None], xs[None, :]]
+
+
 def linear_resize(frame_bgr, width, height):
+    if USE_CENTER_SAMPLE:
+        return center_sample(frame_bgr, width, height)
     if not LINEARIZE_RESIZE:
         return cv2.resize(frame_bgr, (width, height), interpolation=cv2.INTER_AREA)
     f = frame_bgr.astype(np.float32) / 255.0
